@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#
+# pdfmanuc - pdf manuscript compressor
+#
+# Сжимает pdf-документы рукописных лекций (черно-белые изображения с большой
+# долей белого фона) путем конвертации: pdf -> монохромные pbm -> постраничные
+# pdf -> сборка в единый pdf-файл.
+
+set -euo pipefail
+
+PROG="pdfmanuc"
+DEFAULT_RESOLUTION="300"
+
+# Печать справки по использованию
+usage() {
+    cat <<EOF
+Использование: ${PROG} [опции] <входной.pdf>
+
+Сжимает pdf-документ рукописных лекций.
+
+Опции:
+    -h, --help          показать эту справку и выйти
+    -o <файл>           файл для записи результата
+                        (по умолчанию <входной>.manuc.pdf рядом с исходным)
+    -r <разрешение>     целевое разрешение изображений в DPI (по умолчанию ${DEFAULT_RESOLUTION})
+
+Примеры:
+    ${PROG} core.pdf
+    ${PROG} -o out.pdf core.pdf
+    ${PROG} -r 600 core.pdf
+EOF
+}
+
+# Печать короткой справки по установке зависимостей.
+# Текст согласован с разделом "Installation" корневого README.md.
+install_help() {
+    cat <<'EOF'
+Установите необходимые утилиты (pdftoppm, img2pdf, pdftk).
+
+Ubuntu / Debian:
+    sudo apt update && sudo apt install -y poppler-utils img2pdf pdftk-java
+
+Red Hat / Fedora:
+    sudo dnf install -y poppler-utils img2pdf pdftk
+
+Arch Linux:
+    sudo pacman -S --needed poppler img2pdf pdftk
+EOF
+}
+
+# Вывод сообщения об ошибке и завершение с ненулевым кодом
+die() {
+    echo "Ошибка: $*" >&2
+    exit 1
+}
+
+# Проверка наличия необходимого ПО; при отсутствии печатает справку по установке
+check_dependencies() {
+    local missing=()
+    local tool
+    for tool in pdftoppm img2pdf pdftk; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            missing+=("$tool")
+        fi
+    done
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "Ошибка: не найдены необходимые утилиты: ${missing[*]}" >&2
+        echo >&2
+        install_help >&2
+        exit 1
+    fi
+}
+
+# Разбор аргументов командной строки
+output=""
+resolution="$DEFAULT_RESOLUTION"
+input=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -o)
+            [ "$#" -ge 2 ] || die "для опции -o требуется значение"
+            output="$2"
+            shift 2
+            ;;
+        -r)
+            [ "$#" -ge 2 ] || die "для опции -r требуется значение"
+            resolution="$2"
+            shift 2
+            ;;
+        -*)
+            die "неизвестный аргумент: $1"
+            ;;
+        *)
+            [ -z "$input" ] || die "лишний аргумент: $1"
+            input="$1"
+            shift
+            ;;
+    esac
+done
+
+# Проверка обязательных условий
+[ -n "$input" ] || die "не указан входной файл. Используйте -h для справки."
+[ -f "$input" ] || die "входной файл не найден: $input"
+[ -r "$input" ] || die "входной файл недоступен для чтения: $input"
+case "$resolution" in
+    ''|*[!0-9]*) die "разрешение должно быть целым положительным числом: $resolution" ;;
+esac
+[ "$resolution" -gt 0 ] || die "разрешение должно быть больше нуля: $resolution"
+
+# Выходной файл по умолчанию: <входной>.manuc.pdf рядом с исходным
+if [ -z "$output" ]; then
+    output="${input%.pdf}.manuc.pdf"
+fi
+
+check_dependencies
+
+# Временный каталог для промежуточных файлов, удаляется при любом завершении
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+echo "Конвертация pdf в монохромные pbm (разрешение ${resolution} dpi)..."
+pdftoppm -r "$resolution" -mono "$input" "$tmpdir/page"
+
+shopt -s nullglob
+pbms=("$tmpdir"/page-*.pbm)
+shopt -u nullglob
+[ "${#pbms[@]}" -gt 0 ] || die "не удалось получить страницы из файла: $input"
+
+echo "Конвертация pbm в постраничные pdf..."
+pdfs=()
+for pbm in "${pbms[@]}"; do
+    pdf="${pbm%.pbm}.pdf"
+    img2pdf "$pbm" -o "$pdf"
+    pdfs+=("$pdf")
+done
+
+echo "Сборка результата: ${output}"
+pdftk "${pdfs[@]}" cat output "$output"
+
+echo "Готово: ${output}"
