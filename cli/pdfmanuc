@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PROG="pdfmanuc"
-DEFAULT_RESOLUTION="300"
+DEFAULT_DEVICE="tablet"
 
 # Печать справки по использованию
 usage() {
@@ -22,13 +22,38 @@ usage() {
     -h, --help          показать эту справку и выйти
     -o <файл>           файл для записи результата
                         (по умолчанию <входной>.manuc.pdf рядом с исходным)
-    -r <разрешение>     целевое разрешение изображений в DPI (по умолчанию ${DEFAULT_RESOLUTION})
+    --for-device <устройство>
+                        профиль сжатия: eink (150 dpi, монохром),
+                        tablet (300 dpi, монохром), print (300 dpi, градации
+                        серого); по умолчанию ${DEFAULT_DEVICE}
+    -r <разрешение>     целевое разрешение изображений в DPI; переопределяет
+                        разрешение выбранного профиля
 
 Примеры:
     ${PROG} core.pdf
-    ${PROG} -o out.pdf core.pdf
-    ${PROG} -r 600 core.pdf
+    ${PROG} --for-device eink core.pdf
+    ${PROG} --for-device print -o out.pdf core.pdf
+    ${PROG} --for-device tablet -r 600 core.pdf
 EOF
+}
+
+# Разрешение профиля устройства по умолчанию
+device_resolution() {
+    case "$1" in
+        eink)   echo "150" ;;
+        tablet) echo "300" ;;
+        print)  echo "300" ;;
+        *)      return 1 ;;
+    esac
+}
+
+# Флаг цветового режима pdftoppm для профиля устройства
+device_mode() {
+    case "$1" in
+        eink|tablet) echo "-mono" ;;
+        print)       echo "-gray" ;;
+        *)           return 1 ;;
+    esac
 }
 
 # Печать короткой справки по установке зависимостей.
@@ -74,7 +99,9 @@ check_dependencies() {
 
 # Разбор аргументов командной строки
 output=""
-resolution="$DEFAULT_RESOLUTION"
+device="$DEFAULT_DEVICE"
+resolution=""
+resolution_set=0
 input=""
 
 while [ "$#" -gt 0 ]; do
@@ -88,9 +115,15 @@ while [ "$#" -gt 0 ]; do
             output="$2"
             shift 2
             ;;
+        --for-device)
+            [ "$#" -ge 2 ] || die "для опции --for-device требуется значение"
+            device="$2"
+            shift 2
+            ;;
         -r)
             [ "$#" -ge 2 ] || die "для опции -r требуется значение"
             resolution="$2"
+            resolution_set=1
             shift 2
             ;;
         -*)
@@ -108,6 +141,28 @@ done
 [ -n "$input" ] || die "не указан входной файл. Используйте -h для справки."
 [ -f "$input" ] || die "входной файл не найден: $input"
 [ -r "$input" ] || die "входной файл недоступен для чтения: $input"
+
+# Проверка профиля устройства
+case "$device" in
+    eink|tablet|print) ;;
+    *) die "недопустимый профиль устройства: $device (доступны: eink, tablet, print)" ;;
+esac
+
+# Разрешение: профиль задаёт значение по умолчанию, явный -r его переопределяет
+if [ "$resolution_set" -eq 0 ]; then
+    resolution="$(device_resolution "$device")"
+fi
+
+# Цветовой режим определяется профилем устройства
+mode="$(device_mode "$device")"
+
+# Расширение файлов страниц зависит от режима pdftoppm:
+# монохром (-mono) даёт .pbm, градации серого (-gray) дают .pgm
+case "$mode" in
+    -mono) page_ext="pbm" ;;
+    -gray) page_ext="pgm" ;;
+esac
+
 case "$resolution" in
     ''|*[!0-9]*) die "разрешение должно быть целым положительным числом: $resolution" ;;
 esac
@@ -124,19 +179,19 @@ check_dependencies
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
-echo "Конвертация pdf в монохромные pbm (разрешение ${resolution} dpi)..."
-pdftoppm -r "$resolution" -mono "$input" "$tmpdir/page"
+echo "Конвертация pdf в страницы (профиль ${device}, разрешение ${resolution} dpi, режим ${mode})..."
+pdftoppm -r "$resolution" "$mode" "$input" "$tmpdir/page"
 
 shopt -s nullglob
-pbms=("$tmpdir"/page-*.pbm)
+pages=("$tmpdir"/page-*."$page_ext")
 shopt -u nullglob
-[ "${#pbms[@]}" -gt 0 ] || die "не удалось получить страницы из файла: $input"
+[ "${#pages[@]}" -gt 0 ] || die "не удалось получить страницы из файла: $input"
 
-echo "Конвертация pbm в постраничные pdf..."
+echo "Конвертация страниц в постраничные pdf..."
 pdfs=()
-for pbm in "${pbms[@]}"; do
-    pdf="${pbm%.pbm}.pdf"
-    img2pdf "$pbm" -o "$pdf"
+for page in "${pages[@]}"; do
+    pdf="${page%.*}.pdf"
+    img2pdf "$page" -o "$pdf"
     pdfs+=("$pdf")
 done
 

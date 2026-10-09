@@ -14,8 +14,21 @@ without a noticeable loss of readability on a tablet or computer screen.
 The compression pipeline is:
 
 ```
-pdf -> monochrome pbm -> per-page pdf -> single pdf
+pdf -> pbm/pgm pages -> per-page pdf -> single pdf
 ```
+
+### Compression levels
+
+The output is tuned to the target device with the `--for-device` option. Each
+profile selects a resolution and a color mode:
+
+| Device | Resolution | Color mode |
+|---|---|---|
+| `eink` | 150 dpi | Monochrome |
+| `tablet` | 300 dpi | Monochrome |
+| `print` | 300 dpi | Grayscale |
+
+If `--for-device` is omitted, the `tablet` profile is used.
 
 ## Installation
 
@@ -83,12 +96,25 @@ pdfmanuc [options] <input.pdf>
 |---|---|
 | `-h`, `--help` | Show usage help and exit |
 | `-o <file>` | Output file (default: `<input>.manuc.pdf` next to the input) |
-| `-r <resolution>` | Target image resolution in DPI (default: `300`) |
+| `--for-device <device>` | Compression profile: `eink` (150 dpi, monochrome), `tablet` (300 dpi, monochrome), `print` (300 dpi, grayscale); default: `tablet` |
+| `-r <resolution>` | Target image resolution in DPI; overrides the resolution of the selected profile |
 
 Show the help:
 
 ```bash
 pdfmanuc -h
+```
+
+Compress for an e-ink screen:
+
+```bash
+pdfmanuc --for-device eink core.pdf
+```
+
+Compress for printing (grayscale):
+
+```bash
+pdfmanuc --for-device print core.pdf
 ```
 
 Write the result to a specific file:
@@ -97,14 +123,14 @@ Write the result to a specific file:
 pdfmanuc -o out.pdf core.pdf
 ```
 
-Use a custom resolution:
+Override the resolution of the selected profile:
 
 ```bash
-pdfmanuc -r 600 core.pdf
+pdfmanuc --for-device tablet -r 600 core.pdf
 ```
 
 Combine options:
 
 ```bash
-pdfmanuc -r 600 -o out.pdf core.pdf
+pdfmanuc --for-device print -r 600 -o out.pdf core.pdf
 ```
